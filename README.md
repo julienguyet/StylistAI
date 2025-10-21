@@ -43,13 +43,19 @@ In order to build the container you must in order:
 
 What we will do is create a container while mounting two volumes to it. Thus, we can work directly within the container while using our local storage.
 
-Please note we are allocating port 9001 to our container but you can choose any that you like.
+Please note we are allocating port 9001 to our container but you can choose any that you like. You must also run all your containers on the same network. To do so you can run:
+```
+docker network create stylistai-net
+```
+
+Then you simply need to pass this network as an argument when building your containers.
 
 ```
 docker run -it --gpus all \
   -v your/path/to/folder/StylistAI:/workspace \
   -v your/path/to/folder/fashion_data:/data \
   -p 9001:9001 \
+  --network stylistai-net \
   --name stylistai-container \
   --restart always \
   stylistai-dev
