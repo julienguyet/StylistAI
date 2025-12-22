@@ -4,6 +4,11 @@ It leverages customer profiles, purchase history, and product metadata to unders
 
 The whole pipeline has been designed to be easily reproductible by leveraging Docker containers. Please refer to dedicated sections if you would like to reproduce.
 
+## Dataset
+Data has been retrieved from the *H&M Personalized Fashion Recommendations* competition hosted on [Kaggle](https://www.kaggle.com/competitions/h-and-m-personalized-fashion-recommendations/overview).
+
+To recreate locally the databases you can refer to the dedicated sections below.
+
 ## Dev Environment
 The first thing we need is a dev environment. To do this we must (i) create a docker image and (ii) build the container.
 
@@ -52,6 +57,7 @@ Then you simply need to pass this network as an argument when building your cont
 
 ```
 docker run -it --gpus all \
+  --user $(id -u):$(id -g) \
   -v your/path/to/folder/StylistAI:/workspace \
   -v your/path/to/folder/fashion_data:/data \
   -p 9001:9001 \
@@ -61,4 +67,18 @@ docker run -it --gpus all \
   stylistai-dev
 ```
 
-Great! Now we are all set: to work from the container simply install the remote developer package in VS Code and look for the option "attach to running container" and you're good to go.
+Great! Now we are all set. To work from the container simply install the remote developer package in VS Code and look for the option "attach to running container" and you're good to go.
+
+## MongoDB
+
+```
+docker run -d ^
+  --name stylistai-mongo ^
+  --network stylistai-net ^
+  -p 27017:27017 ^
+  -v C:\Users\guyet\Documents\mongo_data:/data/db ^
+  -e MONGO_INITDB_ROOT_USERNAME=admin ^
+  -e MONGO_INITDB_ROOT_PASSWORD=supersecurepassword ^
+  --restart always ^
+  mongo:7.0
+```
