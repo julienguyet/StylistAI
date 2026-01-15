@@ -62,3 +62,30 @@ docker run -it --gpus all \
 ```
 
 Great! Now we are all set: to work from the container simply install the remote developer package in VS Code and look for the option "attach to running container" and you're good to go.
+
+## MongoDb
+
+```
+docker run -d \
+  --name stylistai-mongo \
+  --network stylistai-net \
+  -p 27017:27017 \
+  -v C:\Users\guyet\Documents\mongo_data:/data/db \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=supersecurepassword \
+  --restart always \
+  mongo:7.0
+```
+
+## Ollama
+
+```
+docker run -d \
+  --name stylistai-ollama \
+  --network stylistai-net \
+  -p 11434:11434 \
+  -v C:\Users\guyet\Documents\ollama_data:/root/.ollama \
+  --gpus all \
+  --restart always \
+  ollama/ollama
+```

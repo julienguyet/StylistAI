@@ -1,0 +1,7 @@
+pandas==2.3.3
+numpy==2.2.6
+matplotlib==3.10.7
+seaborn==0.13.2
+google-adk==1.17.0
+pymongo==4.15.3
+python-dotenv==1.1.1
