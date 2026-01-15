@@ -16,8 +16,8 @@ The first thing we need is a dev environment. To do this we must (i) create a do
 In a location of your choice, create a Dockerfile like in the below example. Please note you may have to adapt the image based on your GPU settings.
 
 ```
-# Use an official CUDA-enabled Ubuntu base image
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
+# If you need to use an official CUDA-enabled Ubuntu base image: nvidia/cuda:12.2.0-devel-ubuntu22.04
+FROM ubuntu:resolute-20251208 
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -26,10 +26,17 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv git vim nano wget curl sudo \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip config set global.break-system-packages true
+
+# Create dev user
+RUN useradd -m -s /bin/bash dev \
+    && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
+    && chmod 0440 /etc/sudoers.d/dev
+
+ENV HOME=/home/dev
+
 # Set up a working directory
 WORKDIR /workspace
-
-RUN useradd -ms /bin/bash dev && usermod -aG sudo dev
 USER dev
 
 CMD ["/bin/bash"]
@@ -57,7 +64,6 @@ Then you simply need to pass this network as an argument when building your cont
 
 ```
 docker run -it --gpus all \
-  --user $(id -u):$(id -g) \
   -v your/path/to/folder/StylistAI:/workspace \
   -v your/path/to/folder/fashion_data:/data \
   -p 9001:9001 \
