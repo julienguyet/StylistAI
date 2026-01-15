@@ -3,7 +3,6 @@ import numpy as np
 from pymongo import MongoClient, UpdateOne
 from dotenv import dotenv_values
 from tqdm import tqdm
-import math
 
 env_path = "/workspace/.env"
 config = dotenv_values(env_path)
@@ -38,7 +37,7 @@ print("Starting Job: creating Articles Collection in Mongo")
 print(dashline)
 
 print("Loading dataset...")
-articles_csv = "/data/processed/articles_df"
+articles_csv = "/data/processed/articles_df.csv"
 chunksize = 50000
 articles_df = pd.read_csv(articles_csv, chunksize=chunksize)
 print("Successful! Now moving to writing operation...")
