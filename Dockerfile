@@ -1,5 +1,5 @@
-# If you need to use an official CUDA-enabled Ubuntu base image: nvidia/cuda:12.2.0-devel-ubuntu22.04
-FROM ubuntu:resolute-20251208 
+# If you need to use an official Ubuntu base image: ubuntu:resolute-20251208
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 
 
 ENV DEBIAN_FRONTEND=noninteractive
 
