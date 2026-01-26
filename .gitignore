@@ -1,4 +1,6 @@
 notebooks/workspace.code-workspace
+mlartifacts/
+mlflow.db
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
