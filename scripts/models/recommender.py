@@ -24,25 +24,25 @@ MAX_HISTORY = 50
 BATCH_SIZE = 1024
 
 # ------------- Model hyperparameters ------------- #
-EPOCHS = 50
-LEARNING_RATE = 0.1
+EPOCHS = 100
+LEARNING_RATE = 1e-2
 
 # Customer Tower
-CUSTOMER_EMBEDDING_DIM = 64
-CLUB_EMBEDDING_DIM = 32
+CUSTOMER_EMBEDDING_DIM = 32
+CLUB_EMBEDDING_DIM = 16
 NEWS_EMBEDDING_DIM = 8
 SALES_EMBEDDING_DIM = 8
 
 # Article Tower
-ARTICLE_EMBEDDING_DIM = 64
-PRODUCT_TYPE_EMBEDDING_DIM = 32
+ARTICLE_EMBEDDING_DIM = 32
+PRODUCT_TYPE_EMBEDDING_DIM = 16
 SECTION_EMBEDDING_DIM = 8
 PRODUCT_GROUP_EMBEDDING_DIM = 8
 DESC_EMBEDDING_DIM = 32
 
 # MLP Layers
-MLP_LAYER_1 = 64
-MLP_LAYER_2 = 32
+MLP_LAYER_1 = 32
+MLP_LAYER_2 = 16
 MLP_DROPOUT = 0.2
 
 # Text vectorization settings.
@@ -180,15 +180,15 @@ print("TF dataset is ready, now moving to model definition...")
 print(DASHLINE)
 
 # Vocabularies.
-unique_customer_ids = customer_features["customer_id"].unique()
-unique_article_ids = articles_features["article_id"].unique()
-unique_club_status = customer_features["club_member_status"].unique()
-unique_news_freq = customer_features["fashion_news_frequency"].unique()
-unique_sales_channel = customer_features["favorite_sales_channel"].unique()
+unique_customer_ids = customer_features["customer_id"].unique().tolist()
+unique_article_ids = articles_features["article_id"].unique().tolist()
+unique_club_status = customer_features["club_member_status"].unique().tolist()
+unique_news_freq = customer_features["fashion_news_frequency"].unique().tolist()
+unique_sales_channel = customer_features["favorite_sales_channel"].unique().tolist()
 
-unique_product_type = articles_features["product_type_name"].unique()
-unique_section = articles_features["section_name"].unique()
-unique_product_group = articles_features["product_group_name"].unique()
+unique_product_type = articles_features["product_type_name"].unique().tolist()
+unique_section = articles_features["section_name"].unique().tolist()
+unique_product_group = articles_features["product_group_name"].unique().tolist()
 
 # Text vectorizer for descriptions.
 desc_vectorizer = tf.keras.layers.TextVectorization(
@@ -383,6 +383,15 @@ with mlflow.start_run() as run:
 
         tf.keras.callbacks.TerminateOnNaN(),
     ]
+    
+    class MLflowMetricsCallback(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            if not logs:
+                return
+            metrics = {k: float(v) for k, v in logs.items() if v is not None}
+            mlflow.log_metrics(metrics, step=epoch)
+
+    callbacks.append(MLflowMetricsCallback())
 
     model = TwoTowerModel(CustomerModel(article_lookup, article_embedding),
                         ArticleModel(article_lookup, article_embedding))
@@ -406,22 +415,11 @@ with mlflow.start_run() as run:
         "detail_desc": (None,),
     })
 
-    model.build({
-        "customer_id": (None,),
-        "age_scaled": (None,),
-        "club_member_status": (None,),
-        "fashion_news_frequency": (None,),
-        "favorite_sales_channel": (None,),
-        "history_article_ids": (None, MAX_HISTORY),
-        "article_id": (None,),
-        "product_type_name": (None,),
-        "section_name": (None,),
-        "product_group_name": (None,),
-        "detail_desc": (None,),
-    })
-    
     summary_buf = io.StringIO()
-    model.summary(print_fn=lambda x: summary_buf.write(x + "\n"))
+    summary_buf.write("Customer tower summary\n")
+    model.customer_model.summary(print_fn=lambda x: summary_buf.write(x + "\n"))
+    summary_buf.write("\nArticle tower summary\n")
+    model.article_model.summary(print_fn=lambda x: summary_buf.write(x + "\n"))
     mlflow.log_text(summary_buf.getvalue(), "model_summary.txt")
 
     mlflow.log_params({
@@ -470,6 +468,8 @@ with mlflow.start_run() as run:
     mlflow.log_artifacts(log_dir, artifact_path="tensorboard")
     model.load_weights(ckpt_path)
     mlflow.tensorflow.log_model(model, artifact_path="model_best")
+    model_path = os.path.join(base_out, "model_best")
+    mlflow.tensorflow.save_model(model, path=model_path)
     best_val = max(history.history.get(monitor_metric, [-float("inf")]))
     mlflow.log_metric(f"best_{monitor_metric}", best_val)
 
