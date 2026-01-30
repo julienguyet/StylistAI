@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import ast
 from pymongo import MongoClient, UpdateOne
 from dotenv import dotenv_values
 from tqdm import tqdm
@@ -34,7 +35,18 @@ def row_to_doc(row: dict) -> dict:
     pa = doc.get("purchased_articles")
     if pa is None or is_missing(pa):
         doc["purchased_articles"] = []
-    elif not isinstance(pa, list):
+    elif isinstance(pa, str):
+        try:
+            parsed = ast.literal_eval(pa)
+        except (ValueError, SyntaxError):
+            parsed = []
+        doc["purchased_articles"] = parsed if isinstance(parsed, list) else [parsed]
+    elif isinstance(pa, list):
+        if len(pa) == 1 and isinstance(pa[0], list):
+            doc["purchased_articles"] = pa[0]
+        else:
+            doc["purchased_articles"] = pa
+    else:
         doc["purchased_articles"] = list(pa)
 
     return doc
