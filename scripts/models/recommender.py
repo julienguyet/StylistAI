@@ -25,29 +25,29 @@ BATCH_SIZE = 1024
 
 # ------------- Model hyperparameters ------------- #
 EPOCHS = 100
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 0.1 #1e-3
 EMBEDDINGS_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)
 
 # Customer Tower
 CUSTOMER_EMBEDDING_DIM = 64
 CLUB_EMBEDDING_DIM = 32
-NEWS_EMBEDDING_DIM = 16
-SALES_EMBEDDING_DIM = 16
+NEWS_EMBEDDING_DIM = 8
+SALES_EMBEDDING_DIM = 8
 
 # Article Tower
 ARTICLE_EMBEDDING_DIM = 64
 PRODUCT_TYPE_EMBEDDING_DIM = 32
 SECTION_EMBEDDING_DIM = 16
 PRODUCT_GROUP_EMBEDDING_DIM = 16
-DESC_EMBEDDING_DIM = 64
+DESC_EMBEDDING_DIM = 32
 
 # MLP Layers
 MLP_LAYER_1 = 128
 MLP_LAYER_2 = 64
-MLP_DROPOUT = 0.4
-DENSE_REGULARIZER = tf.keras.regularizers.L2(l2=0.01)
+MLP_DROPOUT = 0.2
+DENSE_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)
 
-# Text vectorization settings.
+# Text vectorization settings
 DESC_MAX_TOKENS = 10_000
 DESC_OUTPUT_SEQ_LEN = 30
 
@@ -110,15 +110,22 @@ def _pad_or_truncate(items, max_len=MAX_HISTORY):
         items = items + [""] * (max_len - len(items))
     return items
 
-customers_data["purchased_articles_list"] = customers_data["purchased_articles"].apply(_ensure_list)
-customers_data["history_article_ids"] = customers_data["purchased_articles_list"].apply(_pad_or_truncate)
+def _remove_target_from_history(row):
+    """Remove the target article from purchase history to prevent leakage"""
+    history = _ensure_list(row["purchased_articles"]).copy()
+    target = row["article_id"]
+    history = [item for item in history if item != target]
+    return _pad_or_truncate(history)
 
-interactions = customers_data[["customer_id", "purchased_articles_list"]].explode("purchased_articles_list")
+customers_data["purchased_articles_list"] = customers_data["purchased_articles"].apply(_ensure_list)
+
+interactions = customers_data[["customer_id", "purchased_articles", "purchased_articles_list"]].explode("purchased_articles_list")
 interactions = interactions.dropna(subset=["purchased_articles_list"])
 interactions = interactions[interactions["purchased_articles_list"] != ""]
 interactions = interactions.rename(columns={"purchased_articles_list": "article_id"})
+interactions["history_article_ids"] = interactions.apply(_remove_target_from_history, axis=1)
 
-# Bring in customer and article features used by the model.
+# Bring in customer and article features used by the model
 customer_features = customers_data[
     [
         "customer_id",
@@ -126,13 +133,12 @@ customer_features = customers_data[
         "club_member_status",
         "fashion_news_frequency",
         "favorite_sales_channel",
-        "history_article_ids",
     ]
 ].copy()
 
 articles_features = articles_df[["article_id", "product_type_name", "section_name", "product_group_name", "detail_desc"]].copy()
 
-# Normalize types and fill missing text fields.
+# Normalize types and fill missing text fields
 customer_features["customer_id"] = customer_features["customer_id"].astype(str)
 articles_features["article_id"] = articles_features["article_id"].astype(str)
 
@@ -147,19 +153,20 @@ interactions["article_id"] = interactions["article_id"].astype(str)
 interactions = interactions.merge(customer_features, on="customer_id", how="left")
 interactions = interactions.merge(articles_features, on="article_id", how="left")
 print("Interaction dataframe is ready with new features about purchases history!")
+print("IMPORTANT: Target articles removed from history to prevent leakage")
 print(DASHLINE)
 
 # ------------- Create Tensorflow Dataset ------------- #
 print("Creating TF Dataset...")
 tf.random.set_seed(RANDOM_SEED)
 
-# Build train/test split.
+# Build train/test split
 interactions = interactions.sample(frac=1.0, random_state=RANDOM_SEED).reset_index(drop=True)
 train_size = int(TRAIN_SPLIT * len(interactions))
 train_df = interactions.iloc[:train_size]
 test_df = interactions.iloc[train_size:]
 
-# Build tf.data datasets.
+# Build tf.data datasets
 def df_to_dataset(df):
     history_array = np.stack(df["history_article_ids"].values)
     return tf.data.Dataset.from_tensor_slices({
@@ -181,7 +188,7 @@ test_ds = df_to_dataset(test_df).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
 print("TF dataset is ready, now moving to model definition...")
 print(DASHLINE)
 
-# Vocabularies.
+# Vocabularies
 unique_customer_ids = customer_features["customer_id"].unique().tolist()
 unique_article_ids = articles_features["article_id"].unique().tolist()
 unique_club_status = customer_features["club_member_status"].unique().tolist()
@@ -192,7 +199,15 @@ unique_product_type = articles_features["product_type_name"].unique().tolist()
 unique_section = articles_features["section_name"].unique().tolist()
 unique_product_group = articles_features["product_group_name"].unique().tolist()
 
-# Text vectorizer for descriptions.
+# Article embedding shared between both towers
+article_lookup = tf.keras.layers.StringLookup(vocabulary=unique_article_ids, mask_token=None)
+article_embedding = tf.keras.layers.Embedding(
+    article_lookup.vocabulary_size(),
+    ARTICLE_EMBEDDING_DIM,
+    embeddings_regularizer=EMBEDDINGS_REGULARIZER
+)
+
+# Description vectorizer
 desc_vectorizer = tf.keras.layers.TextVectorization(
     max_tokens=DESC_MAX_TOKENS,
     output_mode="int",
@@ -200,92 +215,79 @@ desc_vectorizer = tf.keras.layers.TextVectorization(
 )
 desc_vectorizer.adapt(articles_features["detail_desc"].values)
 
-# Shared item lookup/embedding for item ids and history pooling.
-article_lookup = tf.keras.layers.StringLookup(
-    vocabulary=unique_article_ids, mask_token=""
-)
-article_embedding = tf.keras.layers.Embedding(
-    article_lookup.vocabulary_size(), ARTICLE_EMBEDDING_DIM, mask_zero=True
-)
-
-# ------------- Create Recommender Model ------------- #
-
 class CustomerModel(tf.keras.Model):
-    def __init__(self, article_lookup_layer, article_embedding_layer):
+    def __init__(self, article_lookup, article_embedding):
         super().__init__()
-        self.customer_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_customer_ids, mask_token=None
-        )
+        self.customer_lookup = tf.keras.layers.StringLookup(vocabulary=unique_customer_ids, mask_token=None)
+        self.club_lookup = tf.keras.layers.StringLookup(vocabulary=unique_club_status, mask_token=None)
+        self.news_lookup = tf.keras.layers.StringLookup(vocabulary=unique_news_freq, mask_token=None)
+        self.sales_lookup = tf.keras.layers.StringLookup(vocabulary=unique_sales_channel, mask_token=None)
+        self.article_history_lookup = article_lookup
+        
         self.customer_embedding = tf.keras.layers.Embedding(
             self.customer_lookup.vocabulary_size(), CUSTOMER_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
-        )
-        self.club_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_club_status, mask_token=None
         )
         self.club_embedding = tf.keras.layers.Embedding(
             self.club_lookup.vocabulary_size(), CLUB_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
         )
-        self.news_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_news_freq, mask_token=None
-        )
         self.news_embedding = tf.keras.layers.Embedding(
             self.news_lookup.vocabulary_size(), NEWS_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
-        )
-        self.sales_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_sales_channel, mask_token=None
         )
         self.sales_embedding = tf.keras.layers.Embedding(
             self.sales_lookup.vocabulary_size(), SALES_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
         )
-        self.history_lookup = article_lookup_layer
-        self.history_embedding = article_embedding_layer
-        self.history_pool = tf.keras.layers.GlobalAveragePooling1D()
+        self.article_history_embedding = article_embedding
+        
         self.mlp = tf.keras.Sequential([
-            tf.keras.layers.Dense(MLP_LAYER_1, activation="relu"),
+            tf.keras.layers.Dense(MLP_LAYER_1, activation="relu", kernel_regularizer=DENSE_REGULARIZER),
             tf.keras.layers.Dropout(MLP_DROPOUT),
             tf.keras.layers.Dense(MLP_LAYER_2, kernel_regularizer=DENSE_REGULARIZER),
         ])
 
-    def call(self, features):
-        history_ids = self.history_lookup(features["history_article_ids"])
-        history_emb = self.history_embedding(history_ids)
-        history_vec = self.history_pool(history_emb)
-
+    def call(self, features, training=False):
+        age_scaled = tf.expand_dims(features["age_scaled"], -1)
+        
+        # Use mean pooling with masking for variable-length history
+        # Create mask BEFORE lookup (mask empty strings in original data)
+        mask = tf.cast(tf.not_equal(features["history_article_ids"], ""), tf.float32)
+        mask = tf.expand_dims(mask, -1)
+        
+        history_ids = self.article_history_lookup(features["history_article_ids"])
+        history_emb = self.article_history_embedding(history_ids)
+        
+        # Apply mask to embeddings
+        history_emb = history_emb * mask
+        # Avoid division by zero
+        history_pooled = tf.reduce_sum(history_emb, axis=1) / (tf.reduce_sum(mask, axis=1) + 1e-9)
+        
         x = tf.concat(
             [
                 self.customer_embedding(self.customer_lookup(features["customer_id"])),
+                age_scaled,
                 self.club_embedding(self.club_lookup(features["club_member_status"])),
                 self.news_embedding(self.news_lookup(features["fashion_news_frequency"])),
                 self.sales_embedding(self.sales_lookup(features["favorite_sales_channel"])),
-                tf.expand_dims(features["age_scaled"], -1),
-                history_vec,
+                history_pooled,
             ],
             axis=1,
         )
-        return self.mlp(x)
+        return self.mlp(x, training=training)
 
 class ArticleModel(tf.keras.Model):
-    def __init__(self, article_lookup_layer, article_embedding_layer):
+    def __init__(self, article_lookup, article_embedding):
         super().__init__()
-        self.article_lookup = article_lookup_layer
-        self.article_embedding = article_embedding_layer
-
-        self.product_type_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_product_type, mask_token=None
-        )
+        self.article_lookup = article_lookup
+        self.article_embedding = article_embedding
+        
+        self.product_type_lookup = tf.keras.layers.StringLookup(vocabulary=unique_product_type, mask_token=None)
+        self.section_lookup = tf.keras.layers.StringLookup(vocabulary=unique_section, mask_token=None)
+        self.product_group_lookup = tf.keras.layers.StringLookup(vocabulary=unique_product_group, mask_token=None)
+        
         self.product_type_embedding = tf.keras.layers.Embedding(
             self.product_type_lookup.vocabulary_size(), PRODUCT_TYPE_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
         )
-
-        self.section_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_section, mask_token=None
-        )
         self.section_embedding = tf.keras.layers.Embedding(
             self.section_lookup.vocabulary_size(), SECTION_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
-        )
-
-        self.product_group_lookup = tf.keras.layers.StringLookup(
-            vocabulary=unique_product_group, mask_token=None
         )
         self.product_group_embedding = tf.keras.layers.Embedding(
             self.product_group_lookup.vocabulary_size(), PRODUCT_GROUP_EMBEDDING_DIM, embeddings_regularizer=EMBEDDINGS_REGULARIZER
@@ -299,13 +301,14 @@ class ArticleModel(tf.keras.Model):
                 tf.keras.layers.GlobalAveragePooling1D(),
             ]
         )
+        
         self.mlp = tf.keras.Sequential([
-            tf.keras.layers.Dense(MLP_LAYER_1, activation="relu"),
+            tf.keras.layers.Dense(MLP_LAYER_1, activation="relu", kernel_regularizer=DENSE_REGULARIZER),
             tf.keras.layers.Dropout(MLP_DROPOUT),
             tf.keras.layers.Dense(MLP_LAYER_2, kernel_regularizer=DENSE_REGULARIZER),
         ])
 
-    def call(self, features):
+    def call(self, features, training=False):
         x = tf.concat(
             [
                 self.article_embedding(self.article_lookup(features["article_id"])),
@@ -316,9 +319,9 @@ class ArticleModel(tf.keras.Model):
             ],
             axis=1,
         )
-        return self.mlp(x)
+        return self.mlp(x, training=training)
 
-# Build candidate dataset for evaluation.
+# Build candidate dataset for evaluation
 candidate_ds = tf.data.Dataset.from_tensor_slices(
     {
         "article_id": articles_features["article_id"].values,
@@ -341,9 +344,45 @@ class TwoTowerModel(tfrs.Model):
         )
 
     def compute_loss(self, features, training=False):
-        user_embeddings = self.customer_model(features)
-        item_embeddings = self.article_model(features)
+        user_embeddings = self.customer_model(features, training=training)
+        item_embeddings = self.article_model(features, training=training)
         return self.task(user_embeddings, item_embeddings)
+
+
+class TwoTowerModule(tf.Module):
+    def __init__(self, two_tower_model):
+        super().__init__()
+        self.customer_model = two_tower_model.customer_model
+        self.article_model = two_tower_model.article_model
+
+    @tf.function(
+        input_signature=[
+            {
+                "customer_id": tf.TensorSpec([None], tf.string),
+                "age_scaled": tf.TensorSpec([None], tf.float32),
+                "club_member_status": tf.TensorSpec([None], tf.string),
+                "fashion_news_frequency": tf.TensorSpec([None], tf.string),
+                "favorite_sales_channel": tf.TensorSpec([None], tf.string),
+                "history_article_ids": tf.TensorSpec([None, MAX_HISTORY], tf.string),
+            }
+        ]
+    )
+    def customer_embedding(self, features):
+        return self.customer_model(features, training=False)
+
+    @tf.function(
+        input_signature=[
+            {
+                "article_id": tf.TensorSpec([None], tf.string),
+                "product_type_name": tf.TensorSpec([None], tf.string),
+                "section_name": tf.TensorSpec([None], tf.string),
+                "product_group_name": tf.TensorSpec([None], tf.string),
+                "detail_desc": tf.TensorSpec([None], tf.string),
+            }
+        ]
+    )
+    def article_embedding(self, features):
+        return self.article_model(features, training=False)
 
 # ------------- Train with ML Flow tracking ------------- #
 print("Two Tower Model defined and now ready to be compiled...")
@@ -354,7 +393,11 @@ print("Starting Training with ML Flow...")
 print(f"You can follow training in ML Flow by running the command: mlflow server --port 5000")
 print(DASHLINE)
 
-mlflow.set_tracking_uri("http://localhost:5000")
+tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+if not tracking_uri:
+    #tracking_uri = f"file:{os.path.abspath('mlruns')}"
+    mlflow.set_tracking_uri("http://localhost:5000")
+#mlflow.set_tracking_uri(tracking_uri)
 mlflow.set_experiment("recommender")
 mlflow.tensorflow.autolog(log_models=False)
 
@@ -369,12 +412,12 @@ with mlflow.start_run() as run:
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
-            monitor=monitor_metric, patience=5, mode="max",
+            monitor=monitor_metric, patience=10, mode="max",
             restore_best_weights=True, verbose=1),
 
         tf.keras.callbacks.ReduceLROnPlateau(
-            monitor=monitor_metric, mode="max", factor=0.1, patience=3,
-            min_lr=1e-5, cooldown=1, verbose=1),
+            monitor=monitor_metric, mode="max", factor=0.5, patience=5,
+            min_lr=1e-6, cooldown=2, verbose=1),
 
         tf.keras.callbacks.TensorBoard(log_dir=log_dir),
 
@@ -398,24 +441,27 @@ with mlflow.start_run() as run:
 
     model = TwoTowerModel(CustomerModel(article_lookup, article_embedding),
                         ArticleModel(article_lookup, article_embedding))
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+    
+    #optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adagrad(learning_rate=LEARNING_RATE)
+    model.compile(optimizer=optimizer)
 
-    # Log model architecture summary for layer sizes/params.
-    model.customer_model.build({
-        "customer_id": (None,),
-        "age_scaled": (None,),
-        "club_member_status": (None,),
-        "fashion_news_frequency": (None,),
-        "favorite_sales_channel": (None,),
-        "history_article_ids": (None, MAX_HISTORY),
+    # Build models by calling with real tensors to preserve string dtypes
+    model.customer_model({
+        "customer_id": tf.constant(["0"], dtype=tf.string),
+        "age_scaled": tf.constant([0.0], dtype=tf.float32),
+        "club_member_status": tf.constant(["unknown"], dtype=tf.string),
+        "fashion_news_frequency": tf.constant(["unknown"], dtype=tf.string),
+        "favorite_sales_channel": tf.constant(["unknown"], dtype=tf.string),
+        "history_article_ids": tf.constant([[""] * MAX_HISTORY], dtype=tf.string),
     })
 
-    model.article_model.build({
-        "article_id": (None,),
-        "product_type_name": (None,),
-        "section_name": (None,),
-        "product_group_name": (None,),
-        "detail_desc": (None,),
+    model.article_model({
+        "article_id": tf.constant(["0"], dtype=tf.string),
+        "product_type_name": tf.constant(["unknown"], dtype=tf.string),
+        "section_name": tf.constant(["unknown"], dtype=tf.string),
+        "product_group_name": tf.constant(["unknown"], dtype=tf.string),
+        "detail_desc": tf.constant(["unknown"], dtype=tf.string),
     })
 
     summary_buf = io.StringIO()
@@ -432,8 +478,9 @@ with mlflow.start_run() as run:
         "random_seed": RANDOM_SEED,
         "epochs": EPOCHS,
         "monitor_metric": monitor_metric,
-        "optimizer": "Adagrad",
+        "optimizer": "Adam",
         "learning_rate": LEARNING_RATE,
+        "gradient_clipping": 1.0,
         "customer_embedding_dim": CUSTOMER_EMBEDDING_DIM,
         "club_embedding_dim": CLUB_EMBEDDING_DIM,
         "news_embedding_dim": NEWS_EMBEDDING_DIM,
@@ -457,6 +504,8 @@ with mlflow.start_run() as run:
         "unique_section": len(unique_section),
         "unique_product_group": len(unique_product_group),
         "desc_vocab_size": desc_vectorizer.vocabulary_size(),
+        "leakage_prevention": "target_removed_from_history",
+        "batch_norm": "removed_for_stability",
     })
 
     history = model.fit(
@@ -473,6 +522,16 @@ with mlflow.start_run() as run:
     mlflow.tensorflow.log_model(model, artifact_path="model_best")
     model_path = os.path.join(base_out, "model_best")
     mlflow.tensorflow.save_model(model, path=model_path)
+    export_dir = os.path.join(base_out, "saved_model")
+    module = TwoTowerModule(model)
+    tf.saved_model.save(
+        module,
+        export_dir,
+        signatures={
+            "customer_embedding": module.customer_embedding,
+            "article_embedding": module.article_embedding,
+        },
+    )
     best_val = max(history.history.get(monitor_metric, [-float("inf")]))
     mlflow.log_metric(f"best_{monitor_metric}", best_val)
 
