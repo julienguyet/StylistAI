@@ -21,31 +21,31 @@ RANDOM_SEED = 42
 TRAIN_SPLIT = 0.8
 SHUFFLE_BUFFER = 100_000
 MAX_HISTORY = 50
-BATCH_SIZE = 1024  # Back to original - larger batches are actually better for retrieval
+BATCH_SIZE = 1024
 
 # ------------- Model hyperparameters ------------- #
 EPOCHS = 100
-LEARNING_RATE = 1e-3  # Back to original
-EMBEDDINGS_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)  # Light regularization
+LEARNING_RATE = 0.1 #1e-3
+EMBEDDINGS_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)
 
 # Customer Tower
 CUSTOMER_EMBEDDING_DIM = 64
 CLUB_EMBEDDING_DIM = 32
-NEWS_EMBEDDING_DIM = 16
-SALES_EMBEDDING_DIM = 16
+NEWS_EMBEDDING_DIM = 8
+SALES_EMBEDDING_DIM = 8
 
 # Article Tower
 ARTICLE_EMBEDDING_DIM = 64
 PRODUCT_TYPE_EMBEDDING_DIM = 32
 SECTION_EMBEDDING_DIM = 16
 PRODUCT_GROUP_EMBEDDING_DIM = 16
-DESC_EMBEDDING_DIM = 64
+DESC_EMBEDDING_DIM = 32
 
 # MLP Layers
 MLP_LAYER_1 = 128
 MLP_LAYER_2 = 64
-MLP_DROPOUT = 0.2  # Light dropout
-DENSE_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)  # Consistent with embeddings
+MLP_DROPOUT = 0.2
+DENSE_REGULARIZER = tf.keras.regularizers.L2(l2=1e-4)
 
 # Text vectorization settings
 DESC_MAX_TOKENS = 10_000
@@ -238,7 +238,6 @@ class CustomerModel(tf.keras.Model):
         )
         self.article_history_embedding = article_embedding
         
-        # NO BATCH NORMALIZATION - it breaks retrieval models
         self.mlp = tf.keras.Sequential([
             tf.keras.layers.Dense(MLP_LAYER_1, activation="relu", kernel_regularizer=DENSE_REGULARIZER),
             tf.keras.layers.Dropout(MLP_DROPOUT),
@@ -303,7 +302,6 @@ class ArticleModel(tf.keras.Model):
             ]
         )
         
-        # NO BATCH NORMALIZATION - it breaks retrieval models
         self.mlp = tf.keras.Sequential([
             tf.keras.layers.Dense(MLP_LAYER_1, activation="relu", kernel_regularizer=DENSE_REGULARIZER),
             tf.keras.layers.Dropout(MLP_DROPOUT),
@@ -350,6 +348,42 @@ class TwoTowerModel(tfrs.Model):
         item_embeddings = self.article_model(features, training=training)
         return self.task(user_embeddings, item_embeddings)
 
+
+class TwoTowerModule(tf.Module):
+    def __init__(self, two_tower_model):
+        super().__init__()
+        self.customer_model = two_tower_model.customer_model
+        self.article_model = two_tower_model.article_model
+
+    @tf.function(
+        input_signature=[
+            {
+                "customer_id": tf.TensorSpec([None], tf.string),
+                "age_scaled": tf.TensorSpec([None], tf.float32),
+                "club_member_status": tf.TensorSpec([None], tf.string),
+                "fashion_news_frequency": tf.TensorSpec([None], tf.string),
+                "favorite_sales_channel": tf.TensorSpec([None], tf.string),
+                "history_article_ids": tf.TensorSpec([None, MAX_HISTORY], tf.string),
+            }
+        ]
+    )
+    def customer_embedding(self, features):
+        return self.customer_model(features, training=False)
+
+    @tf.function(
+        input_signature=[
+            {
+                "article_id": tf.TensorSpec([None], tf.string),
+                "product_type_name": tf.TensorSpec([None], tf.string),
+                "section_name": tf.TensorSpec([None], tf.string),
+                "product_group_name": tf.TensorSpec([None], tf.string),
+                "detail_desc": tf.TensorSpec([None], tf.string),
+            }
+        ]
+    )
+    def article_embedding(self, features):
+        return self.article_model(features, training=False)
+
 # ------------- Train with ML Flow tracking ------------- #
 print("Two Tower Model defined and now ready to be compiled...")
 monitor_metric = "val_factorized_top_k/top_10_categorical_accuracy"
@@ -359,7 +393,11 @@ print("Starting Training with ML Flow...")
 print(f"You can follow training in ML Flow by running the command: mlflow server --port 5000")
 print(DASHLINE)
 
-mlflow.set_tracking_uri("http://localhost:5000")
+tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+if not tracking_uri:
+    #tracking_uri = f"file:{os.path.abspath('mlruns')}"
+    mlflow.set_tracking_uri("http://localhost:5000")
+#mlflow.set_tracking_uri(tracking_uri)
 mlflow.set_experiment("recommender")
 mlflow.tensorflow.autolog(log_models=False)
 
@@ -404,11 +442,8 @@ with mlflow.start_run() as run:
     model = TwoTowerModel(CustomerModel(article_lookup, article_embedding),
                         ArticleModel(article_lookup, article_embedding))
     
-    # Use Adam optimizer instead of Adagrad - better for this task
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=LEARNING_RATE,
-        clipnorm=1.0
-    )
+    #optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adagrad(learning_rate=LEARNING_RATE)
     model.compile(optimizer=optimizer)
 
     # Build models by calling with real tensors to preserve string dtypes
@@ -487,6 +522,16 @@ with mlflow.start_run() as run:
     mlflow.tensorflow.log_model(model, artifact_path="model_best")
     model_path = os.path.join(base_out, "model_best")
     mlflow.tensorflow.save_model(model, path=model_path)
+    export_dir = os.path.join(base_out, "saved_model")
+    module = TwoTowerModule(model)
+    tf.saved_model.save(
+        module,
+        export_dir,
+        signatures={
+            "customer_embedding": module.customer_embedding,
+            "article_embedding": module.article_embedding,
+        },
+    )
     best_val = max(history.history.get(monitor_metric, [-float("inf")]))
     mlflow.log_metric(f"best_{monitor_metric}", best_val)
 
