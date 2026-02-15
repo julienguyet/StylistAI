@@ -88,3 +88,30 @@ docker run -d `
   --restart always `
   mongo:7.0
 ```
+
+## Recommender API
+
+```
+docker build -t recommender_api .
+```
+
+```
+docker run -d --name stylistai-api --network stylistai-net -p 8000:8000 --restart always `
+  -v "C:\Users\guyet\Documents\fashion_data:/data" `
+  -e MODEL_PATH=/data/models/mlruns_outputs/fc49224e1ba24094ae6b606de6a86b17/saved_model `
+  recommender_api
+```
+
+## MCP Server
+```
+fastmcp run main.py:mcp --transport http --port 8000
+```
+
+## Agent
+```
+adk create stylist_agent
+```
+
+```
+adk web --port 8001
+```
