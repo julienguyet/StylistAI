@@ -75,9 +75,11 @@ docker run -it --gpus all `
 
 Great! Now we are all set. To work from the container simply install the remote developer package in VS Code and look for the option "attach to running container" and you're good to go.
 
-## MongoDB
+### MongoDB
 
-```
+To store our data we use a MongoDB instance. You can run the following command to start a MongoDB container with persistence and network configuration:
+
+```powershell
 docker run -d `
   --name stylistai-mongo `
   --network stylistai-net `
@@ -89,7 +91,35 @@ docker run -d `
   mongo:7.0
 ```
 
-## Recommender API
+## Train Two Tower Model
+
+### Model Definition
+
+The recommendation system utilizes a **Two-Tower Architecture**, a standard for retrieval tasks in large-scale recommender systems.
+
+- **Customer Tower**: Processes user features (ID, age, club status, fashion news frequency, etc.) and their purchase history to generate a user embedding.
+- **Article Tower**: Processes item features (ID, product type, section, department, description, etc.) to generate an item embedding.
+
+The model is trained to maximize the similarity (dot product) between the user embedding and the embedding of the article they purchased (positive pair), while minimizing similarity with other articles (in-batch negatives).
+
+### Training Process
+
+We have two ways to work with the model:
+
+1.  **Experimentation (`notebooks/recommender_pooling.ipynb`)**: Use this Jupyter notebook for data exploration, feature engineering testing, and quick model prototyping. It allows for interactive debugging and visualization of data processing steps.
+2.  **Production Training (`scripts/models/recommender.py`)**: This is the finalized script for training the model. It includes **MLflow** for experiment tracking (logging metrics, parameters, and artifacts like the saved model).
+
+To launch a training run with MLflow tracking, run the script from your development environment. You can view the results by starting the MLflow UI:
+
+```bash
+mlflow server --port 5000
+```
+
+### Build API
+
+Once the model is trained and saved, we serve it using a FastAPI application.
+
+1.  **Build the API Docker image:**
 
 ```
 docker build -t recommender_api .
@@ -103,15 +133,29 @@ docker run -d --name stylistai-api --network stylistai-net -p 8000:8000 --restar
 ```
 
 ## MCP Server
-```
+
+We use the Model Context Protocol (MCP) to expose our tools and data to the agent.
+
+To run the MCP server:
+
+```bash
 fastmcp run main.py:mcp --transport http --port 8000
 ```
 
 ## Agent
-```
+
+The **Stylist Agent** is the conversational interface that interacts with the user. It uses the MCP server to fetch recommendations and product details.
+
+To create the agent:
+
+```bash
 adk create stylist_agent
 ```
 
-```
+To quickly test and visualize the agent's behavior, use the `adk web` command. This launches a local web interface where you can chat with your agent and see its internal thought process:
+
+```bash
 adk web --port 8001
 ```
+
+*Note: In a future update, we will deploy the agent as an API in a dedicated Docker container.*
