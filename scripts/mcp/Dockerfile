@@ -24,4 +24,4 @@ USER appuser
 
 EXPOSE 8001
 
-CMD ["fastmcp", "run", "main.py:mcp", "--transport", "http", "--port", "8001"] 
+CMD ["python", "main.py"]

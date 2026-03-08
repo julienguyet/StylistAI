@@ -8,11 +8,18 @@ from functools import lru_cache
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from geopy.exc import GeocoderTimedOut, GeocoderUnavailable, GeocoderServiceError
+import httpx
+import traceback
+from qdrant_client import AsyncQdrantClient
+import os
 
-env_path = "/workspace/scripts/mcp/.env"
+env_path = os.path.join(os.path.dirname(__file__), '.env')
 config = dotenv_values(env_path)
 
 RECOMMENDER_URL = "http://stylistai-api:8000/invoke"
+OLLAMA_URL = "http://ollama:11434/api/embeddings"
+QDRANT_URL = "http://qdrant:6333"
+COLLECTION_NAME = "fashion_articles"
 # GOOGLE_MAPS_API = config['GOOGLE_MAPS_API']
 # gmaps = googlemaps.Client(key=GOOGLE_MAPS_API)
 
@@ -153,7 +160,6 @@ def get_customer_coordinates(address: str) -> dict:
     except (GeocoderTimedOut, GeocoderUnavailable, GeocoderServiceError):
         return None
 
-
 # get all stores close to customer address
 @mcp.tool
 def get_near_stores(city: str, db: str = "stylistai", collection: str = "stores") -> list:
@@ -271,5 +277,58 @@ def get_store_info(store_id: str, db: str = "stylistai", collection: str = "stor
     finally:
         client.close()
 
+# compare a user query with articles embeddings
+@mcp.tool()
+async def search_catalog(query_text: str, limit: int = 5) -> str:
+    """
+    Search the H&M fashion catalog for products using semantic similarity.
+    Use this tool when the user describes a style, color, or specific clothing item.
+    
+    Args:
+        query_text: The natural language description of the item (e.g., 'blue summer dress').
+        limit: Number of items to return (default is 5).
+    """
+    async with httpx.AsyncClient() as http_client:
+        payload = {
+            "model": "embeddinggemma",
+            "prompt": query_text
+        }
+        
+        try:
+            resp = await http_client.post(OLLAMA_URL, json=payload, timeout=60.0)
+            resp.raise_for_status()
+            vector = resp.json()['embedding']
+
+            async_qdrant = AsyncQdrantClient(url=QDRANT_URL)
+            results = await async_qdrant.query_points(
+                collection_name=COLLECTION_NAME,
+                query=vector,
+                limit=limit,
+                with_payload=True
+            )
+
+            if not results.points:
+                return "No matching items found in the catalog."
+
+            formatted_results = []
+            for hit in results.points:
+                p = hit.payload
+                item_str = (
+                    f"- {p.get('prod_name', 'Unknown Item')} "
+                    f"(ID: {p.get('article_id')})\n"
+                    f"  Section: {p.get('article_section')}\n"
+                    f"  Description: {p.get('description')}\n"
+                    f"  Match Score: {hit.score:.2f}"
+                )
+                formatted_results.append(item_str)
+
+            return "\n\n".join(formatted_results)
+
+        except Exception as e:
+            error_msg = f"Error during catalog search: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            return error_msg
+
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="http", host="0.0.0.0", port=8001)
