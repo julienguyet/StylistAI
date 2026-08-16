@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  /* Falls back to 0px on desktop; picks up the real notch/home-bar inset on a
+     phone so the bottom nav and chat sheet never sit under the gesture bar. */
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+body {
+  @apply bg-neutral-200 text-hm-ink antialiased;
+  /* Vertical layout: the app is a phone-width column. On a wide screen the
+     neutral body shows either side of it, which reads as a device on stage. */
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: var(--safe-bottom);
+  }
+  .pt-safe {
+    padding-top: var(--safe-top);
+  }
+  .h-safe-bottom {
+    height: var(--safe-bottom);
+  }
+  /* Filter chips and thumbnail rails scroll sideways; the bar itself is noise
+     on a phone and steals vertical space in a recording. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
