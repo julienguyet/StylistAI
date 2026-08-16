@@ -32,7 +32,7 @@ export function AddToCartButton({
   }
 
   return (
-    <div className="fixed bottom-[calc(3.5rem+var(--safe-bottom))] left-1/2 z-20 w-full max-w-[520px] -translate-x-1/2 border-t border-hm-line bg-white/95 px-4 py-3 backdrop-blur">
+    <div className="fixed bottom-[calc(3.5rem+var(--safe-bottom))] left-1/2 z-20 w-full max-w-phone -translate-x-1/2 border-t border-hm-line bg-white/95 px-4 py-3 backdrop-blur">
       <div className="flex items-center gap-3">
         <span className="text-lg font-semibold">{formatPrice(price, currency)}</span>
         <button

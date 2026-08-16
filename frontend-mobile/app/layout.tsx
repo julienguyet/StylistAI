@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {/* The whole app is a single phone-width column. It fills a narrow
                 window edge to edge, and centres itself on anything wider so a
                 desktop screen recording still frames like a phone. */}
-            <div className="relative mx-auto flex min-h-screen w-full max-w-[520px] flex-col bg-white shadow-xl">
+            <div className="relative mx-auto flex min-h-screen w-full max-w-phone flex-col bg-white shadow-xl">
               <Header />
 
               {/* Bottom padding clears the fixed nav (56px) plus the home bar. */}

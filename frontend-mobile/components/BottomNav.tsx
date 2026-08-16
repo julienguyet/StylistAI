@@ -24,7 +24,7 @@ export function BottomNav() {
   const { open: openChat } = useChat();
 
   return (
-    <nav className="fixed bottom-0 left-1/2 z-30 w-full max-w-[520px] -translate-x-1/2 border-t border-hm-line bg-white/95 pb-safe backdrop-blur">
+    <nav className="fixed bottom-0 left-1/2 z-30 w-full max-w-phone -translate-x-1/2 border-t border-hm-line bg-white/95 pb-safe backdrop-blur">
       <div className="flex items-stretch">
         {ITEMS.map((item) => {
           const active =

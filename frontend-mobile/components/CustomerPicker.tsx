@@ -32,7 +32,7 @@ export function CustomerPicker() {
 
       {/* Bottom sheet rather than a centred modal: it opens under the thumb,
           and the list scrolls inside the sheet instead of the page behind it. */}
-      <div className="fixed bottom-0 left-1/2 z-50 flex max-h-[85vh] w-full max-w-[520px] -translate-x-1/2 flex-col rounded-t-2xl bg-white">
+      <div className="fixed bottom-0 left-1/2 z-50 flex max-h-[85vh] w-full max-w-phone -translate-x-1/2 flex-col rounded-t-2xl bg-white">
         <div className="flex justify-center pt-2">
           <span className="h-1 w-10 rounded-full bg-neutral-300" />
         </div>

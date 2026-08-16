@@ -85,9 +85,34 @@ export function ChatWidget() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastMessageRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * Scrolling to the bottom drops the reader at the *end* of a long reply,
+   * which then has to be scrolled back up to be read at all — worse on a phone,
+   * where the sheet shows fewer lines at a time. Pin the top of a new assistant
+   * message to the top of the scroll area instead, so it starts on its first
+   * line. User messages still go to the bottom, which is where the eye expects
+   * your own message to land.
+   */
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const target = lastMessageRef.current;
+    const lastIsAssistant = messages[messages.length - 1]?.role === "assistant";
+
+    if (lastIsAssistant && target) {
+      // getBoundingClientRect rather than offsetTop: the bubble's offsetParent
+      // is not guaranteed to be the scroll container.
+      const delta =
+        target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      // scrollTop clamps itself, so a reply too short to reach the top simply
+      // settles at the bottom with the whole message visible anyway.
+      container.scrollTo({ top: container.scrollTop + delta - 8, behavior: "smooth" });
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+    }
   }, [messages, busy, isOpen]);
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
@@ -189,7 +214,7 @@ export function ChatWidget() {
         className="fixed inset-0 z-40 bg-black/40"
       />
 
-      <section className="fixed bottom-0 left-1/2 z-50 flex h-[88vh] w-full max-w-[520px] -translate-x-1/2 flex-col rounded-t-2xl bg-white shadow-2xl">
+      <section className="fixed bottom-0 left-1/2 z-50 flex h-[88vh] w-full max-w-phone -translate-x-1/2 flex-col rounded-t-2xl bg-white shadow-2xl">
         {/* Grab handle: signals "drag/tap to dismiss" the way a native sheet does. */}
         <div className="flex justify-center pt-2">
           <span className="h-1 w-10 rounded-full bg-neutral-300" />
@@ -232,6 +257,7 @@ export function ChatWidget() {
           {messages.map((message, i) => (
             <div
               key={i}
+              ref={i === messages.length - 1 ? lastMessageRef : undefined}
               className={message.role === "user" ? "flex justify-end" : "flex justify-start"}
             >
               {message.role === "user" ? (
