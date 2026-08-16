@@ -91,6 +91,10 @@ docker run -d `
   mongo:7.0
 ```
 
+`supersecurepassword` is a placeholder. Substitute your own, and use that same value in the
+`MONGO_CONNECTION_STRING` of every service that talks to Mongo — the recommender API, the MCP
+server, and the catalog API each read it from their own `.env`.
+
 ## Train Two Tower Model
 
 ### Model Definition
@@ -132,15 +136,80 @@ docker run -d --name stylistai-api --network stylistai-net -p 8000:8000 --restar
   recommender_api
 ```
 
-## MCP Server
+## Vector Search
 
-We use the Model Context Protocol (MCP) to expose our tools and data to the agent.
+For the semantic catalog search we need two more containers: Ollama to compute the embeddings and Qdrant to store them.
 
-To run the MCP server:
+```powershell
+docker run -d --gpus=all --network stylistai-net -p 11434:11434 `
+  -v ollama:/root/.ollama `
+  --name ollama `
+  ollama/ollama
+```
+
+Please note the `--gpus=all` flag only works if your machine has GPU passthrough. You can simply drop it otherwise.
+
+Once the container runs, pull the embedding model we use:
 
 ```bash
-fastmcp run main.py:mcp --transport http --port 8000
+docker exec ollama ollama pull embeddinggemma
 ```
+
+A fresh Ollama container has no model at all, so this step is not optional. Then create the vector database:
+
+```powershell
+docker run -d --network stylistai-net -p 6333:6333 -p 6334:6334 `
+  -v your/desired/path/to/qdrant/storage:/qdrant/storage `
+  --name qdrant `
+  --restart always `
+  qdrant/qdrant
+```
+
+The `fashion_articles` collection is created and filled from `notebooks/create_embeddings.ipynb`, so you must run that notebook once before the catalog search can return anything.
+
+Both containers must keep the names `ollama` and `qdrant` and stay on `stylistai-net`, as the MCP server calls them by those names.
+
+## MCP Server
+
+We use the Model Context Protocol (MCP) to expose our tools and data to the agent. The server hosts every tool Björn can call: recommendations, store lookup, semantic catalog search and the storefront controls described in the Storefront section below.
+
+While developing you can run the server directly from the source tree. It then serves on `http://localhost:8001/mcp`:
+
+```bash
+cd scripts/mcp
+python main.py
+```
+
+To build the image:
+
+```bash
+docker build -t mcp_server ./scripts/mcp
+```
+
+The server reads `MONGO_CONNECTION_STRING` from its own `.env` file. Please note it loads that file with `dotenv_values`, which reads the file itself and not the environment, so `--env-file` and `-e` have no effect here. The `.dockerignore` keeps your credentials out of the image, so we mount the file at run time instead:
+
+```powershell
+docker run -d --name mcp-server --network stylistai-net -p 8001:8001 --restart always `
+  -v "${PWD}/scripts/mcp/.env:/app/.env:ro" `
+  mcp_server
+```
+
+Run this from the repository root, as the mount path is relative to your working directory.
+
+The container must be named `mcp-server` and run on `stylistai-net`. The agent connects to `http://mcp-server:8001/mcp`, and the tools themselves call the other services by container name (`stylistai-api`, `stylistai-catalog`, `qdrant` and `ollama`). None of these names resolve on the default bridge network.
+
+If the container exits straight away with `KeyError: 'MONGO_CONNECTION_STRING'`, then the `.env` mount did not land. You can check with `docker logs mcp-server`. Because `--restart always` keeps it looping, remove it with `docker rm -f mcp-server` before trying again.
+
+### Adding a new tool
+
+The agent reads the tool list only once, when it starts. So after adding or editing a tool you must restart the MCP server first and the agent second, otherwise Björn keeps calling the old list:
+
+```bash
+docker restart mcp-server
+docker restart stylist-agent
+```
+
+Two things are easy to forget here. The first is the `@mcp.tool` decorator, as without it the function is simply never registered. The second is `system_prompt.txt`, which is where you tell Björn when to use the tool. A registered tool with no rule in the prompt will never be called.
 
 ## Agent
 
@@ -155,7 +224,132 @@ adk create stylist_agent
 To quickly test and visualize the agent's behavior, use the `adk web` command. This launches a local web interface where you can chat with your agent and see its internal thought process:
 
 ```bash
-adk web --port 8001
+adk web --port 8010
 ```
 
-*Note: In a future update, we will deploy the agent as an API in a dedicated Docker container.*
+Please note we use port 8010 here and not 8001, which is already taken by the MCP server.
+
+Once you are happy with the agent, you can serve it as an API in its own container:
+
+```bash
+docker build -t stylist_agent ./scripts/stylist_agent
+```
+
+```powershell
+docker run -d --name stylist-agent --network stylistai-net -p 8015:8015 --restart always `
+  stylist_agent
+```
+
+The image starts `adk api_server` on port 8015 and the container must be named `stylist-agent`, as this is the name the storefront uses to reach it. There is no `--env-file` to pass: ADK loads `scripts/stylist_agent/.env` on its own, which is where the `ANTHROPIC_API_KEY` lives.
+
+Two things are worth knowing before you rebuild this one:
+
+1.  **The system prompt is baked into the image.** The Dockerfile copies the whole folder, so editing `system_prompt.txt` changes nothing until you build again. You can confirm the new prompt landed with `docker exec stylist-agent cat /app/stylist_agent/system_prompt.txt`.
+2.  **The dependencies are pinned on purpose.** They used to be free and a rebuild picked up a newer `google-adk` that no longer installs the `mcp` package. The import of `McpToolset` then fails and the agent never loads. Bump `scripts/stylist_agent/requirements.txt` deliberately rather than by accident.
+
+## Storefront
+
+On top of the chat interface, the project ships a full e-commerce front end so customers can browse the catalog *and* let the agent browse it for them.
+
+### Catalog & Cart API
+
+A FastAPI service that exposes the product catalog, the product images and a persistent cart stored in a `carts` collection in Mongo. It is the backend both the storefront and the agent's MCP tools talk to.
+
+```bash
+docker build -t catalog_api ./scripts/catalog_api
+```
+
+This service reads its configuration from the environment. The `.env` file is excluded from the image by `.dockerignore`, so the credentials have to be supplied at run time. Create the file once from the template:
+
+```bash
+cp scripts/catalog_api/.env.example scripts/catalog_api/.env
+```
+
+Then edit it and set `MONGO_CONNECTION_STRING` to the password your Mongo container uses. Please leave the values unquoted, as Docker passes quotes through literally rather than stripping them and this would corrupt the connection string.
+
+```powershell
+docker run -d --name stylistai-catalog --network stylistai-net -p 8002:8002 --restart always `
+  -v "C:\Users\guyet\Documents\fashion_data:/data" `
+  --env-file scripts/catalog_api/.env `
+  catalog_api
+```
+
+Run this from the repository root, as `--env-file` resolves relative to your working directory.
+
+Interactive API docs are then available at `http://localhost:8002/docs`.
+
+If startup fails with `pymongo.errors.OperationFailure: Authentication failed`, the connection string does not match the credentials your Mongo container was created with. Remove the container with `docker rm -f stylistai-catalog` before correcting the value, otherwise `--restart always` keeps it retrying.
+
+Finally, please note the H&M dataset has no price column, so the API generates a stable synthetic price per article (see `scripts/catalog_api/pricing.py`). It is a demo placeholder and not real H&M pricing.
+
+### Web App
+
+A Next.js storefront with catalog, product and cart pages, plus a chat panel on every page. All traffic to the catalog API and to the agent goes through Next.js route handlers, so no internal hostname is ever exposed to the browser.
+
+To work on it locally:
+
+```bash
+cd frontend
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
+
+The app is then available on `http://localhost:3000`. Edit `.env.local` to point `CATALOG_API_URL` and `ADK_API_URL` at your services.
+
+Or build the container:
+
+```bash
+docker build -t stylistai-frontend ./frontend
+```
+
+```powershell
+docker run -d --name stylistai-frontend --network stylistai-net -p 3000:3000 --restart always `
+  -e CATALOG_API_URL=http://stylistai-catalog:8002 `
+  -e ADK_API_URL=http://stylist-agent:8015 `
+  stylistai-frontend
+```
+
+Please note the storefront is compiled at image build time, so any change to the front end code needs a new `docker build` before you can see it.
+
+There is no login. On first visit the app offers a handful of real profiles sampled from the customer collection, and the chosen `customer_id` drives both the cart and the recommendations. It is also seeded into the agent session state, which is how Björn knows who he is talking to without ever asking for a 64 character hash.
+
+### Letting the agent drive the UI
+
+Any MCP tool can steer the storefront by including a `ui_action` object in its return value. The chat widget scans every tool response for it, and then navigates, refreshes the cart or shows a product grid accordingly:
+
+```json
+{"ui_action": {"type": "navigate", "path": "/product/108775015"}}
+```
+
+This is what turns a recommendation into an open product page. After changing a tool you can check your payload still parses:
+
+```bash
+cd frontend
+npm run verify:ui-actions
+```
+
+See `scripts/mcp/TOOL_DESIGN_NOTES.md` for the API reference, the full `ui_action` contract and the design decisions involved in adding those tools.
+
+## Running the Full Stack
+
+Once every image is built, this is the order to start the containers. Each one only depends on the ones above it:
+
+| Service | Container name | Port |
+|---|---|---|
+| MongoDB | `stylistai-mongo` | 27017 |
+| Ollama | `ollama` | 11434 |
+| Qdrant | `qdrant` | 6333 |
+| Recommender API | `stylistai-api` | 8000 |
+| Catalog & Cart API | `stylistai-catalog` | 8002 |
+| MCP Server | `mcp-server` | 8001 |
+| Stylist Agent | `stylist-agent` | 8015 |
+| Storefront | `stylistai-frontend` | 3000 |
+
+The names matter as much as the ports, since every service calls the others by container name on `stylistai-net`. If a tool fails with `Name or service not known`, then the container it is trying to reach is either stopped or not on that network. You can list what shares the network with:
+
+```bash
+docker network inspect stylistai-net --format '{{range .Containers}}{{.Name}} {{end}}'
+```
+
+Then open `http://localhost:3000`, pick a demo shopper, open the chat and ask for a recommendation. If Björn answers correctly but the store does not move, the reply reached you and the `ui_action` did not: have a look at the browser Network tab on `POST /api/chat` and check that `uiActions` is not empty in the response.
