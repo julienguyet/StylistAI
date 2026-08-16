@@ -8,13 +8,15 @@ import os
 # ----- DEFINE SYSTEM PROMPT ----- #
 file_path = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
 
-with open(file_path, 'r') as file:
+# encoding is explicit: the prompt contains non-ASCII characters ("Björn"), and
+# open() would otherwise fall back to the container's locale.
+with open(file_path, 'r', encoding='utf-8') as file:
     SYSTEM_PROMPT = file.read()
 
 # ----- DEFINE AGENT ----- #
 root_agent = LlmAgent(
     model=LiteLlm(model="anthropic/claude-haiku-4-5"),
-    name="Erling",
+    name="Björn",
     instruction=SYSTEM_PROMPT,
     tools=[
         McpToolset(

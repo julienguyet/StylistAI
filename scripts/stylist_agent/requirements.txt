@@ -1,4 +1,12 @@
-google-adk
-litellm
-anthropic
-google-genai
+# Pinned deliberately. These were unpinned, so every rebuild picked up whatever
+# was latest on PyPI -- a newer google-adk restructured its CLI and stopped
+# pulling the `mcp` SDK in, which made `McpToolset` disappear from
+# google.adk.tools.mcp_tool (that module swallows the ImportError and exports
+# nothing). Bump these on purpose, not by accident.
+google-adk==1.25.0
+litellm==1.81.12
+anthropic==0.77.0
+google-genai==1.63.0
+# Optional extra for google-adk's MCP support; listed explicitly so a future
+# adk release that drops it from its own dependencies cannot break the agent.
+mcp==1.26.0

@@ -20,6 +20,7 @@ RECOMMENDER_URL = "http://stylistai-api:8000/invoke"
 OLLAMA_URL = "http://ollama:11434/api/embeddings"
 QDRANT_URL = "http://qdrant:6333"
 COLLECTION_NAME = "fashion_articles"
+CATALOG_URL = "http://stylistai-catalog:8002"
 # GOOGLE_MAPS_API = config['GOOGLE_MAPS_API']
 # gmaps = googlemaps.Client(key=GOOGLE_MAPS_API)
 
@@ -58,6 +59,18 @@ def mongo_to_dict(doc):
 # Helper function to format addresses for geopy tool
 def _normalize_address(address: str) -> str:
     return " ".join(address.strip().split())
+
+# Helper function for the product web pages and add to cart interactions
+def _same_article(a, b) -> bool:
+    """Article IDs travel in several shapes ('0108775015', '108775015', 108775015).
+
+    The catalog normalises them to ints, so compare numerically before
+    falling back to a string match.
+    """
+    try:
+        return int(str(a).strip()) == int(str(b).strip())
+    except (TypeError, ValueError):
+        return str(a) == str(b)
 
 # Tool to get Recommendations
 @mcp.tool
@@ -329,6 +342,140 @@ async def search_catalog(query_text: str, limit: int = 5) -> str:
             print(error_msg)
             traceback.print_exc()
             return error_msg
+
+@mcp.tool
+def open_product_page(article_id: str) -> dict:
+    """
+    Display one specific article page to the customer.
+
+    Use this once you have settled on a single article worth showing — it moves
+    the customer's screen to that product page. Do not use it while still
+    narrowing down options.
+
+    :param article_id: the product id to display
+    :type article_id: str
+    :return: product details plus the storefront navigation action
+    :rtype: dict
+    """
+    try:
+        resp = requests.get(f"{CATALOG_URL}/products/{article_id}", timeout=10)
+
+        if resp.status_code in (400, 404):
+            return {
+                "status": "error",
+                "agent_next_action": (
+                    f"There is no article {article_id} in the catalog. Do not retry with "
+                    "this id and do not describe this product to the customer. Search "
+                    "the catalog to get a valid article id instead."
+                ),
+            }
+
+        resp.raise_for_status()
+        product = resp.json()
+
+        return {
+            "status": "success",
+            "product": {
+                "article_id": product["article_id"],
+                "prod_name": product.get("prod_name"),
+                "product_type_name": product.get("product_type_name"),
+                "section_name": product.get("section_name"),
+                "price": product.get("price"),
+                "currency": product.get("currency"),
+                "detail_desc": product.get("detail_desc"),
+            },
+            "ui_action": {
+                "type": "navigate",
+                "path": f"/product/{product['article_id']}",
+            },
+            "agent_next_action": (
+                "The product page is now open on the customer's screen. Describe the "
+                "item briefly using the details above and ask what they think."
+            ),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "agent_next_action": (
+                "The catalog could not be reached. Apologise to the customer and offer "
+                "to try again in a moment."
+            ),
+            "error": f"Failed to open product: {str(e)}",
+        }
+
+@mcp.tool
+def add_to_cart(customer_id: str, article_id: str, quantity: int = 1) -> dict:
+    """
+    Add a product to the customer's cart once they have explicitly agreed to it.
+
+    This writes to the cart. Call it exactly once per confirmed item — calling it
+    again with the same article increases the quantity rather than replacing it.
+
+    :param customer_id: the current customer id, taken from session state
+    :type customer_id: str
+    :param article_id: article to add, from the current page or an earlier recommendation
+    :type article_id: str
+    :param quantity: how many units to add, between 1 and 99
+    :type quantity: int
+    :return: the updated cart totals plus the cart refresh action
+    :rtype: dict
+    """
+    if not 1 <= quantity <= 99:
+        return {
+            "status": "error",
+            "agent_next_action": (
+                f"A quantity of {quantity} is not allowed — it must be between 1 and 99. "
+                "Nothing was added. Ask the customer how many they would like."
+            ),
+        }
+
+    try:
+        resp = requests.post(
+            f"{CATALOG_URL}/cart/{customer_id}/items",
+            json={"article_id": article_id, "quantity": quantity},
+            timeout=10,
+        )
+
+        if resp.status_code in (400, 404):
+            return {
+                "status": "error",
+                "agent_next_action": (
+                    f"There is no article {article_id} in the catalog, so nothing was "
+                    "added. Do not tell the customer it was added. Search the catalog "
+                    "for a valid article and confirm with them before retrying."
+                ),
+            }
+
+        resp.raise_for_status()
+        cart = resp.json()
+
+        line = next(
+            (i for i in cart.get("items", []) if _same_article(i["article_id"], article_id)),
+            None,
+        )
+
+        return {
+            "status": "success",
+            "quantity_in_cart": line["quantity"] if line else quantity,
+            "item_count": cart["item_count"],
+            "subtotal": cart["subtotal"],
+            "currency": cart["currency"],
+            "ui_action": {"type": "cart_updated"},
+            "agent_next_action": (
+                "The item is in the cart. Confirm to the customer using the quantity and "
+                "totals above, then ask if there is anything else they need. Do not call "
+                "this tool again for the same item."
+            ),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "agent_next_action": (
+                "The cart could not be updated. Tell the customer plainly that it did not "
+                "go through and offer to try again — never claim the item was added."
+            ),
+            "error": f"Failed to add to cart: {str(e)}",
+        }
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8001)
