@@ -314,6 +314,42 @@ Please note the storefront is compiled at image build time, so any change to the
 
 There is no login. On first visit the app offers a handful of real profiles sampled from the customer collection, and the chosen `customer_id` drives both the cart and the recommendations. It is also seeded into the agent session state, which is how Björn knows who he is talking to without ever asking for a 64 character hash.
 
+### Mobile Web App
+
+`frontend-mobile` is a vertical, phone shaped version of the same storefront. It is a separate Next.js app rather than a responsive tweak, so the desktop one keeps working exactly as it does today and both can run side by side.
+
+The data layer is the same in both. The API route handlers and everything in `lib` are identical copies, so the `ui_action` contract behaves the same way and no MCP tool or prompt needs to change. Only the presentation differs: the whole app is one phone width column, navigation moves to a bottom bar, the chat becomes a full height sheet, and the product page stacks with a sticky add to cart bar.
+
+Two behaviours are specific to this version. The chat sheet closes itself when Björn returns a `navigate` action, because on a phone the sheet covers the whole screen and a navigation you cannot see is a navigation that did not happen. It stays open on `cart_updated`, as the badge behind it refreshes on its own.
+
+To work on it locally:
+
+```bash
+cd frontend-mobile
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
+
+The app is then available on `http://localhost:3001`. We use port 3001 on purpose so it does not clash with the desktop storefront on 3000.
+
+Or build the container:
+
+```bash
+docker build -t stylistai-frontend-mobile ./frontend-mobile
+```
+
+```powershell
+docker run -d --name stylistai-frontend-mobile --network stylistai-net -p 3001:3001 --restart always `
+  -e CATALOG_API_URL=http://stylistai-catalog:8002 `
+  -e ADK_API_URL=http://stylist-agent:8015 `
+  stylistai-frontend-mobile
+```
+
+To record a vertical demo, the simplest way is to open Chrome DevTools, turn on the device toolbar and pick an iPhone. You then get a real 9:16 frame with the safe area insets applied. Resizing the browser window to roughly 500px wide works too, as the column fills anything narrower than 520px edge to edge. On a wider screen it centres itself instead and the grey background shows on either side, which looks like a device on a stage but is not a full bleed vertical video.
+
+See `frontend-mobile/README.md` for the full list of what differs between the two versions.
+
 ### Letting the agent drive the UI
 
 Any MCP tool can steer the storefront by including a `ui_action` object in its return value. The chat widget scans every tool response for it, and then navigates, refreshes the cart or shows a product grid accordingly:
@@ -345,6 +381,7 @@ Once every image is built, this is the order to start the containers. Each one o
 | MCP Server | `mcp-server` | 8001 |
 | Stylist Agent | `stylist-agent` | 8015 |
 | Storefront | `stylistai-frontend` | 3000 |
+| Storefront (mobile) | `stylistai-frontend-mobile` | 3001 |
 
 The names matter as much as the ports, since every service calls the others by container name on `stylistai-net`. If a tool fails with `Name or service not known`, then the container it is trying to reach is either stopped or not on that network. You can list what shares the network with:
 
